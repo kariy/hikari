@@ -26,21 +26,38 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::time::Duration;
 
     use crate::{trusted_peers, with_trusted_peers};
+    use libp2p::core::{ConnectedPoint, Endpoint};
     use libp2p::futures::StreamExt;
     use libp2p::identity::{ed25519, Keypair};
     use libp2p::multiaddr::Protocol;
-    use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
-    use libp2p::PeerId;
+    use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
     use libp2p::{autonat, identify, kad, ping};
     use libp2p::{dns, noise, tcp, yamux};
     use libp2p::{gossipsub, SwarmBuilder};
+    use libp2p::{Multiaddr, PeerId};
     use tokio::select;
     use tokio::time::{interval_at, Instant};
     use tracing::{info, trace};
     use tracing_subscriber::{fmt, EnvFilter};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum PeerState {
+        Discovered,
+        AddressesFound,
+        Connected,
+        Identified,
+    }
+
+    struct PeerInfo {
+        state: PeerState,
+        addrs: Vec<Multiaddr>,
+        connections: Vec<ConnectionId>,
+        trusted: bool,
+    }
 
     #[derive(NetworkBehaviour)]
     struct Behaviour {
@@ -82,7 +99,7 @@ mod tests {
             // build a gossipsub network behaviour
             let mut gossipsub: Behaviour = Behaviour::new(message_authenticity, config).unwrap();
             gossipsub
-                .subscribe(&IdentTopic::new("/mocha/header-sub/v0.0.1"))
+                .subscribe(&IdentTopic::new("/mocha-4/header-sub/v0.0.1"))
                 .unwrap();
 
             gossipsub
@@ -167,6 +184,8 @@ mod tests {
         let _ = swarm.behaviour_mut().kademlia.bootstrap();
         const KADEMLIA_BOOTSTRAP_PERIOD: Duration = Duration::from_secs(5 * 60);
 
+        let mut peer_tracker: HashMap<PeerId, PeerInfo> = HashMap::new();
+
         loop {
             select! {
                 _ = kademlia_interval.tick() => {
@@ -179,17 +198,18 @@ mod tests {
                 }
 
                 ev = swarm.select_next_some() => {
-                    println!("event: {:?}", ev);
 
                     match ev {
                            SwarmEvent::Behaviour(ev) => match ev {
                                BehaviourEvent::Identify(ev) => {
                                    match ev {
                                        identify::Event::Received { peer_id, info } => {
+                                           info!(target: "identify", "Received identify event from {peer_id:?} with info: {info:?}");
+
                                            // Inform Kademlia about the listening addresses
                                            // TODO: Remove this when rust-libp2p#4302 is implemented
                                            for addr in info.listen_addrs {
-                                               self.swarm
+                                               swarm
                                                    .behaviour_mut()
                                                    .kademlia
                                                    .add_address(&peer_id, addr);
@@ -198,26 +218,112 @@ mod tests {
                                        _ => trace!("Unhandled identify event"),
                                    }
                                },
-                               BehaviourEvent::Gossipsub(ev) => self.on_gossip_sub_event(ev).await,
-                               BehaviourEvent::Kademlia(ev) => self.on_kademlia_event(ev).await?,
+
+                               BehaviourEvent::Gossipsub(ev) => {
+
+                                   match ev {
+                                       gossipsub::Event::Message {
+                                           message,
+                                           message_id,
+                                           ..
+                                       } => {
+                                   info!(target: "gossipsub","message");
+
+                                           let Some(peer) = message.source else {
+                                               // Validation mode is `strict` so this will never happen
+                                               return;
+                                           };
+
+                                           // We may discovered a new peer
+                                           // self.peer_maybe_discovered(peer);
+
+                                           // let acceptance = if message.topic == self.header_sub_topic_hash {
+                                           //     self.on_header_sub_message(&message.data[..]).await
+                                           // } else {
+                                           //     trace!("Unhandled gossipsub message");
+                                           //     gossipsub::MessageAcceptance::Ignore
+                                           // };
+
+                                           // let _ = swarm
+                                           //     .behaviour_mut()
+                                           //     .gossipsub
+                                           //     .report_message_validation_result(&message_id, &peer, acceptance);
+                                       }
+
+                                       _ => trace!("Unhandled gossipsub event"),
+                                   }
+                               },
+
+                               BehaviourEvent::Kademlia(ev) => {
+                                   info!(target: "kad", "{ev:?}");
+                                   // self.on_kademlia_event(ev).await?
+                               },
+
                                BehaviourEvent::Autonat(_)
-                               | BehaviourEvent::Ping(_)
-                                => {}
+                                => {
+                                    info!(target: "autonat", "{ev:?}");
+                                }BehaviourEvent::Ping(_) => {
+
+                                    info!(target: "ping", "{ev:?}");
+                                }
                            },
+
                            SwarmEvent::ConnectionEstablished {
                                peer_id,
                                connection_id,
                                endpoint,
                                ..
                            } => {
-                               self.on_peer_connected(peer_id, connection_id, endpoint);
+
+                               info!("connection established {peer_id:?} {connection_id:?} {endpoint:?}");
+
+                               // Inform PeerTracker about the dialed address.
+                               //
+                               // We do this because Kademlia send commands to Swarm
+                               // for dialing a peer and we may not have that address
+                               // in PeerTracker.
+                               let dialed_addr = match endpoint {
+                                   ConnectedPoint::Dialer {
+                                       address,
+                                       role_override: Endpoint::Dialer,
+                                   } => Some(address),
+                                   _ => None,
+                               };
+
+
+
+                               let peer_info= peer_tracker.entry(peer_id).or_insert_with(|| PeerInfo {
+                                   state: PeerState::Discovered,
+                                   addrs: Vec::new(),
+                                   connections: Vec::new(),
+                                   trusted: false,
+                               });
+
+                               if let Some(address) = dialed_addr {
+                                   if !peer_info.addrs.contains(&address) {
+                                       peer_info.addrs.push(address);
+                                   }
+                               }
+
+                               peer_info.connections.push(connection_id);
+
+                               // If peer was not already connected from before
+
+                               if !match (peer_info.state) {
+                                   PeerState::Connected | PeerState::Identified => true,
+                                   _ => false,
+                               }{
+                                   peer_info.state = PeerState::Connected;
+                                   // increment_connected_peers(&self.info_tx, peer_info.trusted);
+                               }
                            }
                            SwarmEvent::ConnectionClosed {
                                peer_id,
                                connection_id,
                                ..
                            } => {
-                               self.on_peer_disconnected(peer_id, connection_id);
+                               info!("connection closed {peer_id:?} {connection_id:?}");
+                               // self.on_peer_disconnected(peer_id, connection_id);
                            }
                            _ => {}
                        }
