@@ -6,4 +6,9 @@ edition.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-libp2p = "0.53.2"
+libp2p = { verison = "0.53.2" , features = ["full"]}
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.18", features = ["env-filter" ] }
+
+[dev-dependencies]
+tokio = { version = "1.35.1", features = ["full"] }
