@@ -26,12 +26,15 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Borrow;
+    use std::collections::hash_map::Entry;
     use std::collections::HashMap;
     use std::time::Duration;
 
     use crate::{trusted_peers, with_trusted_peers};
     use libp2p::core::{ConnectedPoint, Endpoint};
     use libp2p::futures::StreamExt;
+    use libp2p::gossipsub::{IdentTopic, MessageAcceptance};
     use libp2p::identity::{ed25519, Keypair};
     use libp2p::multiaddr::Protocol;
     use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
@@ -72,18 +75,19 @@ mod tests {
     #[tokio::test]
     async fn main() {
         let subscriber = fmt::Subscriber::builder()
-            .with_env_filter(EnvFilter::try_new("info").unwrap())
+            .with_env_filter(EnvFilter::try_new("debug").unwrap())
             .finish();
 
         tracing::subscriber::set_global_default(subscriber).unwrap();
 
         let local_keypair = Keypair::from(ed25519::Keypair::generate());
-        let local_peer_id = PeerId::from_public_key(&local_keypair.public());
+        let local_peer_id = PeerId::from(local_keypair.public());
 
+        let gossipsub_topic = IdentTopic::new("/mocha-4/header-sub/v0.0.1");
         // set up gossipsub protocol
         let gossipsub = {
             use libp2p::gossipsub::{
-                Behaviour, ConfigBuilder, IdentTopic, MessageAuthenticity, ValidationMode,
+                Behaviour, ConfigBuilder, MessageAuthenticity, ValidationMode,
             };
 
             // Set the message authenticity - How we expect to publish messages
@@ -98,9 +102,7 @@ mod tests {
 
             // build a gossipsub network behaviour
             let mut gossipsub: Behaviour = Behaviour::new(message_authenticity, config).unwrap();
-            gossipsub
-                .subscribe(&IdentTopic::new("/mocha-4/header-sub/v0.0.1"))
-                .unwrap();
+            gossipsub.subscribe(&gossipsub_topic).unwrap();
 
             gossipsub
         };
@@ -237,17 +239,18 @@ mod tests {
                                            // We may discovered a new peer
                                            // self.peer_maybe_discovered(peer);
 
-                                           // let acceptance = if message.topic == self.header_sub_topic_hash {
+                                           // let acceptance = if message.topic == gossipsub_topic.hash() {
                                            //     self.on_header_sub_message(&message.data[..]).await
                                            // } else {
                                            //     trace!("Unhandled gossipsub message");
                                            //     gossipsub::MessageAcceptance::Ignore
                                            // };
 
-                                           // let _ = swarm
-                                           //     .behaviour_mut()
-                                           //     .gossipsub
-                                           //     .report_message_validation_result(&message_id, &peer, acceptance);
+
+                                           let _ = swarm
+                                               .behaviour_mut()
+                                               .gossipsub
+                                               .report_message_validation_result(&message_id, &peer, MessageAcceptance::Accept);
                                        }
 
                                        _ => trace!("Unhandled gossipsub event"),
@@ -255,8 +258,27 @@ mod tests {
                                },
 
                                BehaviourEvent::Kademlia(ev) => {
-                                   info!(target: "kad", "{ev:?}");
-                                   // self.on_kademlia_event(ev).await?
+                                   match ev {
+                                       kad::Event::RoutingUpdated {
+                                           peer, addresses, ..
+                                       } => {
+                                           info!(target: "kademlia", "Routing updated for peer {peer:?} with addresses: {addresses:?}");
+
+                                           let state = get(&mut peer_tracker,peer );
+
+                                           for addr in addresses.iter() {
+                                               if !state.addrs.contains(addr) {
+                                                   state.addrs.push(addr.to_owned());
+                                               }
+                                           }
+
+                                           // Upgrade state
+                                           if state.state == PeerState::Discovered && !state.addrs.is_empty() {
+                                               state.state = PeerState::AddressesFound;
+                                           }
+                                       }
+                                       _ => trace!("Unhandled Kademlia event"),
+                                   }
                                },
 
                                BehaviourEvent::Autonat(_)
@@ -291,13 +313,7 @@ mod tests {
                                };
 
 
-
-                               let peer_info= peer_tracker.entry(peer_id).or_insert_with(|| PeerInfo {
-                                   state: PeerState::Discovered,
-                                   addrs: Vec::new(),
-                                   connections: Vec::new(),
-                                   trusted: false,
-                               });
+                               let peer_info = get(&mut peer_tracker, peer_id);
 
                                if let Some(address) = dialed_addr {
                                    if !peer_info.addrs.contains(&address) {
@@ -314,7 +330,6 @@ mod tests {
                                    _ => false,
                                }{
                                    peer_info.state = PeerState::Connected;
-                                   // increment_connected_peers(&self.info_tx, peer_info.trusted);
                                }
                            }
                            SwarmEvent::ConnectionClosed {
@@ -330,5 +345,14 @@ mod tests {
                 },
             }
         }
+    }
+
+    fn get<'a>(peer_tracker: &'a mut HashMap<PeerId, PeerInfo>, id: PeerId) -> &'a mut PeerInfo {
+        peer_tracker.entry(id).or_insert_with(|| PeerInfo {
+            state: PeerState::Discovered,
+            addrs: Vec::new(),
+            connections: Vec::new(),
+            trusted: false,
+        })
     }
 }
