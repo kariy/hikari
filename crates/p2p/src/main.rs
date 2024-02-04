@@ -1,3 +1,4 @@
+use celestia_types::ExtendedHeader;
 use libp2p::Multiaddr;
 
 fn trusted_peers() -> impl Iterator<Item = Multiaddr> {
@@ -33,7 +34,7 @@ use libp2p::{gossipsub, SwarmBuilder};
 use libp2p::{noise, tcp, yamux};
 use tokio::select;
 use tokio::time::{interval_at, Instant};
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,12 +229,13 @@ async fn main() {
                                        // We may discovered a new peer
                                        // self.peer_maybe_discovered(peer);
 
-                                       // let acceptance = if message.topic == gossipsub_topic.hash() {
-                                       //     self.on_header_sub_message(&message.data[..]).await
-                                       // } else {
-                                       //     trace!("Unhandled gossipsub message");
-                                       //     gossipsub::MessageAcceptance::Ignore
-                                       // };
+                                       let acceptance = if message.topic == gossipsub_topic.hash() {
+                                    handle_message(&message.data[..]);
+                                        gossipsub::MessageAcceptance::Accept
+                                       } else {
+                                           trace!("Unhandled gossipsub message");
+                                           gossipsub::MessageAcceptance::Ignore
+                                       };
 
 
                                        let _ = swarm
@@ -332,6 +334,17 @@ async fn main() {
                        _ => {}
                    }
             },
+        }
+    }
+}
+
+fn handle_message(data: &[u8]) {
+    match ExtendedHeader::decode_and_validate(data) {
+        Ok(header) => {
+            info!("Received header: {header}");
+        }
+        Err(e) => {
+            error!("Invalid header: {e}");
         }
     }
 }
