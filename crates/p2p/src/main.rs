@@ -1,14 +1,8 @@
-// - peer id
-// - gossipsub topic id
-// - set up gossipsub behaviour
-// - set up swarm
-// - set up kademlia dht
-// - dial to trusted peers
-
 use libp2p::Multiaddr;
 
 fn trusted_peers() -> impl Iterator<Item = Multiaddr> {
-    let peers : &[_] = &[ "/dns4/da-bridge-mocha-4.celestia-mocha.com/tcp/2121/p2p/12D3KooWCBAbQbJSpCpCGKzqz3rAN4ixYbc63K68zJg9aisuAajg",
+    let peers: &[_] = &[
+    	"/dns4/da-bridge-mocha-4.celestia-mocha.com/tcp/2121/p2p/12D3KooWCBAbQbJSpCpCGKzqz3rAN4ixYbc63K68zJg9aisuAajg",
         "/dns4/da-bridge-mocha-4-2.celestia-mocha.com/tcp/2121/p2p/12D3KooWK6wJkScGQniymdWtBwBuU36n6BRXp9rCDDUD6P5gJr3G",
         "/dns4/da-full-1-mocha-4.celestia-mocha.com/tcp/2121/p2p/12D3KooWCUHPLqQXZzpTx1x3TAsdn3vYmTNDhzg66yG8hqoxGGN8",
         "/dns4/da-full-2-mocha-4.celestia-mocha.com/tcp/2121/p2p/12D3KooWR6SHsXPkkvhCRn6vp1RqSefgaT1X1nMNvrVjU2o3GoYy",
@@ -24,8 +18,6 @@ where
     func(Box::new(trusted_peers()))
 }
 
-use std::borrow::Borrow;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -37,8 +29,8 @@ use libp2p::multiaddr::Protocol;
 use libp2p::swarm::{ConnectionId, NetworkBehaviour, SwarmEvent};
 use libp2p::PeerId;
 use libp2p::{autonat, identify, kad, ping};
-use libp2p::{dns, noise, tcp, yamux};
 use libp2p::{gossipsub, SwarmBuilder};
+use libp2p::{noise, tcp, yamux};
 use tokio::select;
 use tokio::time::{interval_at, Instant};
 use tracing::{info, trace};
@@ -259,7 +251,7 @@ async fn main() {
                                    kad::Event::RoutingUpdated {
                                        peer, addresses, ..
                                    } => {
-                                       info!(target: "kademlia", "Routing updated for peer {peer:?} with addresses: {addresses:?}");
+                                       info!(target: "kademlia", "Routing updated for peer {peer} with addresses: {addresses:#?}");
 
                                        let state = get(&mut peer_tracker,peer );
 
@@ -322,7 +314,7 @@ async fn main() {
 
                            // If peer was not already connected from before
 
-                           if !match (peer_info.state) {
+                           if !match peer_info.state {
                                PeerState::Connected | PeerState::Identified => true,
                                _ => false,
                            }{
@@ -334,7 +326,7 @@ async fn main() {
                            connection_id,
                            ..
                        } => {
-                           info!("connection closed {peer_id:?} {connection_id:?}");
+                           info!("connection closed {peer_id} {connection_id}");
                            // self.on_peer_disconnected(peer_id, connection_id);
                        }
                        _ => {}

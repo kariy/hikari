@@ -1,12 +1,12 @@
 [package]
-name = "hikari-p2p"
+name = "light-p2p"
 version.workspace = true
 edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [[bin]]
 path = "src/main.rs"
-name = "hikari"
+name = "light"
 
 [dependencies]
 libp2p = {version = "0.53.2", features = [
